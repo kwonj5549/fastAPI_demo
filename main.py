@@ -14,7 +14,7 @@ class ECGInputData(BaseModel):
 
 class ECGOutputData(BaseModel):
     results: dict  # Expecting a dictionary of results
-
+accumulated_ecg_data = []
 @app.post("/process_ecg_file", response_model=ECGOutputData)
 def process_ecg(data: ECGInputData) -> ECGOutputData:
     try:
