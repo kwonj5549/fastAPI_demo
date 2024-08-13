@@ -1,46 +1,79 @@
-import requests
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 import pandas as pd
+import neurokit2 as nk
+import numpy as np
 import json
-import time
+import logging
 
-# URL of the FastAPI streaming endpoint
-url = "http://34.122.213.139:8000/process_ecg_stream"  # Replace with your actual server IP or localhost
+app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 
-# Function to read and chunk data from a CSV file
-def read_and_chunk_csv(file_path, chunk_size):
-    df = pd.read_csv(file_path)
-    ecg_column = 'ECG'  # Replace with your actual column name if different
+class ECGInputData(BaseModel):
+    ecg_data: list[float]
 
-    for start in range(0, len(df), chunk_size):
-        chunk = df[ecg_column][start:start + chunk_size].tolist()
-        yield {"ecg_data": chunk}
+class ECGOutputData(BaseModel):
+    results: dict
 
-# Function to stream data to the endpoint
-def stream_data(url, data_chunks):
-    for chunk in data_chunks:
-        response = requests.post(url, json=chunk, headers={"Content-Type": "application/json"})
+# Store accumulated data in a global variable
+accumulated_ecg_data = []
 
-        print(f"Status Code: {response.status_code}")
-        if response.status_code == 200:
-            print("Response Data:", response.json())
+# Minimum chunk size to process data
+MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
+
+@app.post("/process_ecg_file", response_model=ECGOutputData)
+def process_ecg(data: ECGInputData) -> ECGOutputData:
+    try:
+        ecg_signal = pd.Series(data.ecg_data)
+        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
+
+        processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
+        results = nk.bio_analyze(processed_data, sampling_rate=1000)
+
+        results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
+        return ECGOutputData(results=results_dict)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
+
+@app.post("/process_ecg_stream", response_model=ECGOutputData)
+async def process_ecg_stream(request: Request) -> ECGOutputData:
+    global accumulated_ecg_data
+    try:
+        body = await request.json()
+        if "end_of_stream" in body and body["end_of_stream"]:
+            if not accumulated_ecg_data:
+                return {"message": "No data to process."}
+
+            # Process accumulated data
+            ecg_signal = pd.Series(accumulated_ecg_data)
+            ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
+
+            processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
+            results = nk.bio_analyze(processed_data, sampling_rate=1000)
+
+            results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
+
+            # Clear accumulated data after processing
+            accumulated_ecg_data = []
+
+            return ECGOutputData(results=results_dict)
         else:
-            print("Error:", response.text)
+            # Accumulate the chunk of data
+            chunk_ecg_data = body.get("ecg_data", [])
+            if not isinstance(chunk_ecg_data, list):
+                raise HTTPException(status_code=400, detail="Invalid data format. Expected a list of floats.")
 
-        time.sleep(0.5)
+            accumulated_ecg_data.extend(chunk_ecg_data)
 
-    # Signal end of stream
-    end_signal = {"end_of_stream": True}
-    response = requests.post(url, json=end_signal, headers={"Content-Type": "application/json"})
+            return {"message": "Chunk received, accumulating data."}
 
-    print(f"Status Code: {response.status_code}")
-    if response.status_code == 200:
-        print("Response Data:", response.json())
-    else:
-        print("Error:", response.text)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"An error occurred during streaming processing: {e}")
 
-file_path = 'bio_data.csv'  # Replace with the path to your CSV file
-chunk_size = 1000  # Define how many data points per chunk
+@app.get("/")
+def read_root():
+    return {"Hello": "World"}
 
-data_chunks = read_and_chunk_csv(file_path, chunk_size)
-
-stream_data(url, data_chunks)
+@app.get("/items/{item_id}")
+def read_item(item_id: int, q: str = None):
+    return {"item_id": item_id, "q": q}
