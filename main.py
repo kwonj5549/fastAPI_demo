@@ -3,7 +3,6 @@ from pydantic import BaseModel
 import pandas as pd
 import neurokit2 as nk
 import numpy as np
-import json
 import logging
 
 app = FastAPI()
@@ -33,6 +32,7 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
         results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
         return ECGOutputData(results=results_dict)
     except Exception as e:
+        logging.error(f"Error processing ECG file: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
 
 @app.post("/process_ecg_stream", response_model=ECGOutputData)
@@ -68,6 +68,7 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
             return {"message": "Chunk received, accumulating data."}
 
     except Exception as e:
+        logging.error(f"Error processing ECG stream: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during streaming processing: {e}")
 
 @app.get("/")
