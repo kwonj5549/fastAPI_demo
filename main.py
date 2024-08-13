@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, conlist
+from pydantic import BaseModel, Field
 import pandas as pd
 import neurokit2 as nk
 import numpy as np
@@ -7,10 +7,10 @@ import numpy as np
 app = FastAPI()
 
 class ECGInputData(BaseModel):
-    ecg_data: conlist(float)  # Ensure at least one data point is provided
+    ecg_data: list[float]  # A list of floating-point numbers representing the ECG data
 
 class ECGOutputData(BaseModel):
-    results: dict
+    results: dict  # Expecting a dictionary of results
 
 @app.post("/process_ecg", response_model=ECGOutputData)
 def process_ecg(data: ECGInputData) -> ECGOutputData:
@@ -25,8 +25,11 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
         # Compute relevant features
         results = nk.bio_analyze(processed_data, sampling_rate=1000)
 
-        # Convert results to a dictionary and return it as a response
-        return ECGOutputData(results=results.to_dict(orient='records'))
+        # Convert the DataFrame results to a dictionary
+        results_dict = results.to_dict(orient='list')
+
+        # Return the dictionary in the correct format
+        return ECGOutputData(results=results_dict)
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
