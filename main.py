@@ -34,7 +34,6 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
 
-
 @app.post("/process_ecg_stream", response_model=ECGOutputData)
 async def process_ecg_stream(request: Request) -> ECGOutputData:
     try:
@@ -42,8 +41,15 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
 
         # Read the streaming data chunk by chunk
         async for chunk in request.stream():
-            chunk_data = json.loads(chunk.decode('utf-8'))
-            ecg_data.extend(chunk_data['ecg_data'])
+            try:
+                # Decode the chunk and parse the JSON data
+                chunk_data = json.loads(chunk.decode('utf-8'))
+                ecg_data.extend(chunk_data['ecg_data'])
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+        if not ecg_data:
+            raise HTTPException(status_code=400, detail="No ECG data received")
 
         # Process the collected ECG data
         ecg_signal = pd.Series(ecg_data)
