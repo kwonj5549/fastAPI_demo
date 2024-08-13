@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import pandas as pd
 import neurokit2 as nk
 import numpy as np
@@ -25,8 +25,8 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
         # Compute relevant features
         results = nk.bio_analyze(processed_data, sampling_rate=1000)
 
-        # Convert the DataFrame results to a dictionary
-        results_dict = results.to_dict(orient='list')
+        # Convert NumPy arrays in the DataFrame to lists
+        results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
 
         # Return the dictionary in the correct format
         return ECGOutputData(results=results_dict)
