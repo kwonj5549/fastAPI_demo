@@ -6,21 +6,17 @@ import numpy as np
 import json
 
 app = FastAPI()
+class ECGInputData(BaseModel):
+    ecg_data: list[float]  # A list of floating-point numbers representing the ECG data
 
 class ECGOutputData(BaseModel):
     results: dict  # Expecting a dictionary of results
 
 @app.post("/process_ecg_file", response_model=ECGOutputData)
-async def process_ecg_file(file: UploadFile = File(...)) -> ECGOutputData:
+def process_ecg(data: ECGInputData) -> ECGOutputData:
     try:
-        # Read the full file
-        contents = await file.read()
-
-        # Decode and parse JSON data
-        json_data = json.loads(contents.decode('utf-8'))
-
-        # Process the ECG data
-        ecg_signal = pd.Series(json_data['ecg_data'])
+        # Create a DataFrame with the provided ECG data
+        ecg_signal = pd.Series(data.ecg_data)
         ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)  # Clean the signal
 
         # Preprocess the data (filter, find peaks, etc.)
@@ -37,6 +33,7 @@ async def process_ecg_file(file: UploadFile = File(...)) -> ECGOutputData:
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
+
 
 @app.post("/process_ecg_stream", response_model=ECGOutputData)
 async def process_ecg_stream(request: Request) -> ECGOutputData:
