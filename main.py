@@ -42,7 +42,7 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
         body = await request.json()
         if "end_of_stream" in body and body["end_of_stream"]:
             if not accumulated_ecg_data:
-                return {"message": "No data to process."}
+                return ECGOutputData(results={"message": "No data to process."})
 
             # Process accumulated data
             ecg_signal = pd.Series(accumulated_ecg_data)
@@ -65,7 +65,7 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
 
             accumulated_ecg_data.extend(chunk_ecg_data)
 
-            return {"message": "Chunk received, accumulating data."}
+            return ECGOutputData(results={"message": "Chunk received, accumulating data."})
 
     except Exception as e:
         logging.error(f"Error processing ECG stream: {e}")
