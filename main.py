@@ -39,40 +39,42 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
 
 @app.post("/process_ecg_stream", response_model=ECGOutputData)
 async def process_ecg_stream(request: Request) -> ECGOutputData:
+    global accumulated_ecg_data
     try:
-        ecg_data = []
+        # Read the JSON data from the request body
+        body = await request.json()
+        chunk_ecg_data = body.get("ecg_data", [])
 
-        # Read the streaming data chunk by chunk
-        async for chunk in request.stream():
-            if chunk:
-                try:
-                    # Decode the chunk and parse the JSON data
-                    chunk_data = json.loads(chunk.decode('utf-8'))
-                    ecg_data.extend(chunk_data.get('ecg_data', []))
-                except json.JSONDecodeError as e:
-                    logging.error(f"JSON decoding error: {e}")
-                    raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-            else:
-                logging.warning("Received an empty chunk")
+        if not isinstance(chunk_ecg_data, list):
+            raise HTTPException(status_code=400, detail="Invalid data format. Expected a list of floats.")
 
-        if not ecg_data:
-            raise HTTPException(status_code=400, detail="No ECG data received")
+        # Append the new chunk of data to the accumulated data
+        accumulated_ecg_data.extend(chunk_ecg_data)
 
-        # Process the ECG data
-        ecg_signal = pd.Series(ecg_data)
-        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
+        # Optionally, you could process data periodically or when a certain condition is met
+        # For demonstration, we process the accumulated data once it reaches a certain size
+        if len(accumulated_ecg_data) >= 1000:  # Example condition to process data
+            ecg_signal = pd.Series(accumulated_ecg_data)
+            ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)  # Clean the signal
 
-        processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
+            # Preprocess the data (filter, find peaks, etc.)
+            processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
 
-        results = nk.bio_analyze(processed_data, sampling_rate=1000)
+            # Compute relevant features
+            results = nk.bio_analyze(processed_data, sampling_rate=1000)
 
-        results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
+            # Convert NumPy arrays in the DataFrame to lists
+            results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
 
-        return ECGOutputData(results=results_dict)
+            # Clear accumulated data after processing
+            accumulated_ecg_data = []
+
+            return ECGOutputData(results=results_dict)
+
+        return {"message": "Chunk received, accumulate more data to process."}
 
     except Exception as e:
-        logging.error(f"Processing error: {e}")
-        raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
+        raise HTTPException(status_code=400, detail=f"An error occurred during streaming processing: {e}")
 
 # Basic root endpoint for testing
 @app.get("/")
