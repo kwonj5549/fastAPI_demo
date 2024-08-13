@@ -4,8 +4,10 @@ import pandas as pd
 import neurokit2 as nk
 import numpy as np
 import json
+import logging
 
 app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 
 class ECGInputData(BaseModel):
     ecg_data: list[float]  # A list of floating-point numbers representing the ECG data
@@ -42,17 +44,21 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
 
         # Read the streaming data chunk by chunk
         async for chunk in request.stream():
-            try:
-                # Decode the chunk and parse the JSON data
-                chunk_data = json.loads(chunk.decode('utf-8'))
-                ecg_data.extend(chunk_data['ecg_data'])
-            except json.JSONDecodeError as e:
-                raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+            if chunk:
+                try:
+                    # Decode the chunk and parse the JSON data
+                    chunk_data = json.loads(chunk.decode('utf-8'))
+                    ecg_data.extend(chunk_data.get('ecg_data', []))
+                except json.JSONDecodeError as e:
+                    logging.error(f"JSON decoding error: {e}")
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+            else:
+                logging.warning("Received an empty chunk")
 
         if not ecg_data:
             raise HTTPException(status_code=400, detail="No ECG data received")
 
-        # The rest of the code is identical to process_ecg
+        # Process the ECG data
         ecg_signal = pd.Series(ecg_data)
         ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
 
@@ -65,6 +71,7 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
         return ECGOutputData(results=results_dict)
 
     except Exception as e:
+        logging.error(f"Processing error: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
 
 # Basic root endpoint for testing
