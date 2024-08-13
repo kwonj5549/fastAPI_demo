@@ -1,22 +1,55 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile
 from pydantic import BaseModel
 import pandas as pd
 import neurokit2 as nk
 import numpy as np
+import json
 
 app = FastAPI()
-
-class ECGInputData(BaseModel):
-    ecg_data: list[float]  # A list of floating-point numbers representing the ECG data
 
 class ECGOutputData(BaseModel):
     results: dict  # Expecting a dictionary of results
 
-@app.post("/process_ecg", response_model=ECGOutputData)
-def process_ecg(data: ECGInputData) -> ECGOutputData:
+@app.post("/process_ecg_file", response_model=ECGOutputData)
+async def process_ecg_file(file: UploadFile = File(...)) -> ECGOutputData:
     try:
-        # Create a DataFrame with the provided ECG data
-        ecg_signal = pd.Series(data.ecg_data)
+        # Read the full file
+        contents = await file.read()
+
+        # Decode and parse JSON data
+        json_data = json.loads(contents.decode('utf-8'))
+
+        # Process the ECG data
+        ecg_signal = pd.Series(json_data['ecg_data'])
+        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)  # Clean the signal
+
+        # Preprocess the data (filter, find peaks, etc.)
+        processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
+
+        # Compute relevant features
+        results = nk.bio_analyze(processed_data, sampling_rate=1000)
+
+        # Convert NumPy arrays in the DataFrame to lists
+        results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
+
+        # Return the dictionary in the correct format
+        return ECGOutputData(results=results_dict)
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
+
+@app.post("/process_ecg_stream", response_model=ECGOutputData)
+async def process_ecg_stream(request: Request) -> ECGOutputData:
+    try:
+        ecg_data = []
+
+        # Read the streaming data chunk by chunk
+        async for chunk in request.stream():
+            chunk_data = json.loads(chunk.decode('utf-8'))
+            ecg_data.extend(chunk_data['ecg_data'])
+
+        # Process the collected ECG data
+        ecg_signal = pd.Series(ecg_data)
         ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)  # Clean the signal
 
         # Preprocess the data (filter, find peaks, etc.)
