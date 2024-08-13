@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import pandas as pd
 import neurokit2 as nk
@@ -6,6 +6,7 @@ import numpy as np
 import json
 
 app = FastAPI()
+
 class ECGInputData(BaseModel):
     ecg_data: list[float]  # A list of floating-point numbers representing the ECG data
 
@@ -51,20 +52,16 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
         if not ecg_data:
             raise HTTPException(status_code=400, detail="No ECG data received")
 
-        # Process the collected ECG data
+        # The rest of the code is identical to process_ecg
         ecg_signal = pd.Series(ecg_data)
-        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)  # Clean the signal
+        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
 
-        # Preprocess the data (filter, find peaks, etc.)
         processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
 
-        # Compute relevant features
         results = nk.bio_analyze(processed_data, sampling_rate=1000)
 
-        # Convert NumPy arrays in the DataFrame to lists
         results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
 
-        # Return the dictionary in the correct format
         return ECGOutputData(results=results_dict)
 
     except Exception as e:
