@@ -7,7 +7,7 @@ import numpy as np
 app = FastAPI()
 
 class ECGInputData(BaseModel):
-    ecg_data: conlist(float, min_items=1)  # Ensure at least one data point is provided
+    ecg_data: conlist(float)  # Ensure at least one data point is provided
 
 class ECGOutputData(BaseModel):
     results: dict
