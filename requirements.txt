@@ -1,2 +1,6 @@
 fastapi
 uvicorn
+pydantic
+pandas
+numpy
+neurokit2
