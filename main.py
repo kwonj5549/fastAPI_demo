@@ -24,10 +24,10 @@ MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
 def process_ecg(data: ECGInputData) -> ECGOutputData:
     try:
         ecg_signal = pd.Series(data.ecg_data)
-        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
+        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=250)
 
-        processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
-        results = nk.bio_analyze(processed_data, sampling_rate=1000)
+        processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=250)
+        results = nk.bio_analyze(processed_data, sampling_rate=250)
 
         results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
         return ECGOutputData(results=results_dict)
@@ -46,10 +46,10 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
 
             # Process accumulated data
             ecg_signal = pd.Series(accumulated_ecg_data)
-            ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=1000)
+            ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=250)
 
-            processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=1000)
-            results = nk.bio_analyze(processed_data, sampling_rate=1000)
+            processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=250)
+            results = nk.bio_analyze(processed_data, sampling_rate=250)
 
             results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
 
