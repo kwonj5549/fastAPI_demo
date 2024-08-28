@@ -21,6 +21,18 @@ accumulated_ecg_data = []
 # Minimum chunk size to process data
 MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
 
+def merge_intervals(intervals):
+    if not intervals:
+        return []
+    merged = [intervals[0]]
+    for current in intervals[1:]:
+        last = merged[-1]
+        if current[0] <= last[1]:  # Check for overlap
+            merged[-1] = [last[0], max(last[1], current[1])]  # Merge intervals
+        else:
+            merged.append(current)
+    return merged
+
 @app.post("/process_ecg_file", response_model=ECGOutputData)
 def process_ecg(
         data: ECGInputData,
@@ -47,6 +59,11 @@ def process_ecg(
         def get_periods(indices):
             return [[rpeaks[i] / 250, rpeaks[i+1] / 250] for i in indices]
 
+        # Merge overlapping intervals
+        merged_tachycardia = merge_intervals(get_periods(tachycardia_periods))
+        merged_bradycardia = merge_intervals(get_periods(bradycardia_periods))
+        merged_flatline = merge_intervals(get_periods(flatline_periods))
+
         # Calculate cardiac score
         total_periods = len(heart_rate)
         abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
@@ -54,9 +71,9 @@ def process_ecg(
 
         # Prepare results
         results = {
-            "tachycardia_periods": get_periods(tachycardia_periods),
-            "bradycardia_periods": get_periods(bradycardia_periods),
-            "flatline_periods": get_periods(flatline_periods),
+            "tachycardia_periods": merged_tachycardia,
+            "bradycardia_periods": merged_bradycardia,
+            "flatline_periods": merged_flatline,
         }
 
         return ECGOutputData(results=results, cardiac_score=cardiac_score)
@@ -97,6 +114,11 @@ async def process_ecg_stream(
             def get_periods(indices):
                 return [[rpeaks[i] / 250, rpeaks[i+1] / 250] for i in indices]
 
+            # Merge overlapping intervals
+            merged_tachycardia = merge_intervals(get_periods(tachycardia_periods))
+            merged_bradycardia = merge_intervals(get_periods(bradycardia_periods))
+            merged_flatline = merge_intervals(get_periods(flatline_periods))
+
             # Calculate cardiac score
             total_periods = len(heart_rate)
             abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
@@ -104,9 +126,9 @@ async def process_ecg_stream(
 
             # Prepare results
             results = {
-                "tachycardia_periods": get_periods(tachycardia_periods),
-                "bradycardia_periods": get_periods(bradycardia_periods),
-                "flatline_periods": get_periods(flatline_periods),
+                "tachycardia_periods": merged_tachycardia,
+                "bradycardia_periods": merged_bradycardia,
+                "flatline_periods": merged_flatline,
             }
 
             # Clear accumulated data after processing
