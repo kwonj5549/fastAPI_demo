@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from pydantic import BaseModel
 import pandas as pd
 import neurokit2 as nk
@@ -22,7 +22,11 @@ accumulated_ecg_data = []
 MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
 
 @app.post("/process_ecg_file", response_model=ECGOutputData)
-def process_ecg(data: ECGInputData) -> ECGOutputData:
+def process_ecg(
+        data: ECGInputData,
+        tachycardia_cutoff: int = Query(100, description="Heart rate cutoff for tachycardia"),
+        bradycardia_cutoff: int = Query(60, description="Heart rate cutoff for bradycardia")
+) -> ECGOutputData:
     try:
         ecg_signal = pd.Series(data.ecg_data)
         ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=250)
@@ -35,9 +39,13 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
         heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
 
         # Detect abnormalities
-        tachycardia_periods = np.where(heart_rate > 100)[0]
-        bradycardia_periods = np.where(heart_rate < 60)[0]
+        tachycardia_periods = np.where(heart_rate > tachycardia_cutoff)[0]
+        bradycardia_periods = np.where(heart_rate < bradycardia_cutoff)[0]
         flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]  # No R-peaks for more than 1.5 seconds
+
+        # Convert periods to start and end indices
+        def get_periods(indices):
+            return [[rpeaks[i] / 250, rpeaks[i+1] / 250] for i in indices]
 
         # Calculate cardiac score
         total_periods = len(heart_rate)
@@ -46,9 +54,9 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
 
         # Prepare results
         results = {
-            "tachycardia_periods": tachycardia_periods.tolist(),
-            "bradycardia_periods": bradycardia_periods.tolist(),
-            "flatline_periods": flatline_periods.tolist(),
+            "tachycardia_periods": get_periods(tachycardia_periods),
+            "bradycardia_periods": get_periods(bradycardia_periods),
+            "flatline_periods": get_periods(flatline_periods),
         }
 
         return ECGOutputData(results=results, cardiac_score=cardiac_score)
@@ -57,7 +65,11 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
 
 @app.post("/process_ecg_stream", response_model=ECGOutputData)
-async def process_ecg_stream(request: Request) -> ECGOutputData:
+async def process_ecg_stream(
+        request: Request,
+        tachycardia_cutoff: int = Query(100, description="Heart rate cutoff for tachycardia"),
+        bradycardia_cutoff: int = Query(60, description="Heart rate cutoff for bradycardia")
+) -> ECGOutputData:
     global accumulated_ecg_data
     try:
         body = await request.json()
@@ -77,9 +89,13 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
             heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
 
             # Detect abnormalities
-            tachycardia_periods = np.where(heart_rate > 100)[0]
-            bradycardia_periods = np.where(heart_rate < 60)[0]
+            tachycardia_periods = np.where(heart_rate > tachycardia_cutoff)[0]
+            bradycardia_periods = np.where(heart_rate < bradycardia_cutoff)[0]
             flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]  # No R-peaks for more than 1.5 seconds
+
+            # Convert periods to start and end indices
+            def get_periods(indices):
+                return [[rpeaks[i] / 250, rpeaks[i+1] / 250] for i in indices]
 
             # Calculate cardiac score
             total_periods = len(heart_rate)
@@ -88,9 +104,9 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
 
             # Prepare results
             results = {
-                "tachycardia_periods": tachycardia_periods.tolist(),
-                "bradycardia_periods": bradycardia_periods.tolist(),
-                "flatline_periods": flatline_periods.tolist(),
+                "tachycardia_periods": get_periods(tachycardia_periods),
+                "bradycardia_periods": get_periods(bradycardia_periods),
+                "flatline_periods": get_periods(flatline_periods),
             }
 
             # Clear accumulated data after processing
