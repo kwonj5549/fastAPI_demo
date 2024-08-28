@@ -13,6 +13,7 @@ class ECGInputData(BaseModel):
 
 class ECGOutputData(BaseModel):
     results: dict
+    cardiac_score: float
 
 # Store accumulated data in a global variable
 accumulated_ecg_data = []
@@ -26,11 +27,31 @@ def process_ecg(data: ECGInputData) -> ECGOutputData:
         ecg_signal = pd.Series(data.ecg_data)
         ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=250)
 
-        processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=250)
-        results = nk.bio_analyze(processed_data, sampling_rate=250)
+        # Process ECG and detect R-peaks
+        processed_data, info = nk.ecg_process(ecg_signal, sampling_rate=250)
+        rpeaks = info['ECG_R_Peaks']
 
-        results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
-        return ECGOutputData(results=results_dict)
+        # Calculate heart rate
+        heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
+
+        # Detect abnormalities
+        tachycardia_periods = np.where(heart_rate > 100)[0]
+        bradycardia_periods = np.where(heart_rate < 60)[0]
+        flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]  # No R-peaks for more than 1.5 seconds
+
+        # Calculate cardiac score
+        total_periods = len(heart_rate)
+        abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+        cardiac_score = 1 - (abnormal_periods / total_periods)
+
+        # Prepare results
+        results = {
+            "tachycardia_periods": tachycardia_periods.tolist(),
+            "bradycardia_periods": bradycardia_periods.tolist(),
+            "flatline_periods": flatline_periods.tolist(),
+        }
+
+        return ECGOutputData(results=results, cardiac_score=cardiac_score)
     except Exception as e:
         logging.error(f"Error processing ECG file: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
@@ -42,21 +63,40 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
         body = await request.json()
         if "end_of_stream" in body and body["end_of_stream"]:
             if not accumulated_ecg_data:
-                return ECGOutputData(results={"message": "No data to process."})
+                return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0)
 
             # Process accumulated data
             ecg_signal = pd.Series(accumulated_ecg_data)
             ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=250)
 
-            processed_data, info = nk.bio_process(ecg=ecg_signal, sampling_rate=250)
-            results = nk.bio_analyze(processed_data, sampling_rate=250)
+            # Process ECG and detect R-peaks
+            processed_data, info = nk.ecg_process(ecg_signal, sampling_rate=250)
+            rpeaks = info['ECG_R_Peaks']
 
-            results_dict = results.applymap(lambda x: x.tolist() if isinstance(x, np.ndarray) else x).to_dict(orient='list')
+            # Calculate heart rate
+            heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
+
+            # Detect abnormalities
+            tachycardia_periods = np.where(heart_rate > 100)[0]
+            bradycardia_periods = np.where(heart_rate < 60)[0]
+            flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]  # No R-peaks for more than 1.5 seconds
+
+            # Calculate cardiac score
+            total_periods = len(heart_rate)
+            abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+            cardiac_score = 1 - (abnormal_periods / total_periods)
+
+            # Prepare results
+            results = {
+                "tachycardia_periods": tachycardia_periods.tolist(),
+                "bradycardia_periods": bradycardia_periods.tolist(),
+                "flatline_periods": flatline_periods.tolist(),
+            }
 
             # Clear accumulated data after processing
             accumulated_ecg_data = []
 
-            return ECGOutputData(results=results_dict)
+            return ECGOutputData(results=results, cardiac_score=cardiac_score)
         else:
             # Accumulate the chunk of data
             chunk_ecg_data = body.get("ecg_data", [])
@@ -65,7 +105,7 @@ async def process_ecg_stream(request: Request) -> ECGOutputData:
 
             accumulated_ecg_data.extend(chunk_ecg_data)
 
-            return ECGOutputData(results={"message": "Chunk received, accumulating data."})
+            return ECGOutputData(results={"message": "Chunk received, accumulating data."}, cardiac_score=1.0)
 
     except Exception as e:
         logging.error(f"Error processing ECG stream: {e}")
