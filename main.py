@@ -4,6 +4,8 @@ import pandas as pd
 import neurokit2 as nk
 import numpy as np
 import logging
+from google.cloud import storage  # GCP Storage client
+import os
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +22,20 @@ accumulated_ecg_data = []
 
 # Minimum chunk size to process data
 MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
+
+# GCP Bucket name and path
+BUCKET_NAME = os.getenv('fastapibucket')
+STORAGE_CLIENT = storage.Client()
+
+def upload_to_gcs(file_name: str, data: pd.DataFrame):
+    try:
+        bucket = STORAGE_CLIENT.bucket(BUCKET_NAME)
+        blob = bucket.blob(file_name)
+        blob.upload_from_string(data.to_csv(index=False), 'text/csv')
+        logging.info(f"Uploaded {file_name} to GCS")
+    except Exception as e:
+        logging.error(f"Failed to upload {file_name} to GCS: {e}")
+        raise HTTPException(status_code=500, detail=f"Error uploading to GCS: {e}")
 
 def merge_intervals(intervals):
     if not intervals:
@@ -76,6 +92,11 @@ def process_ecg(
             "flatline_periods": merged_flatline,
         }
 
+        # Upload ECG data to GCS
+        df = pd.DataFrame(data.ecg_data, columns=['ECG Data'])
+        file_name = f"ecg_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        upload_to_gcs(file_name, df)
+
         return ECGOutputData(results=results, cardiac_score=cardiac_score)
     except Exception as e:
         logging.error(f"Error processing ECG file: {e}")
@@ -130,6 +151,11 @@ async def process_ecg_stream(
                 "bradycardia_periods": merged_bradycardia,
                 "flatline_periods": merged_flatline,
             }
+
+            # Upload ECG data to GCS
+            df = pd.DataFrame(accumulated_ecg_data, columns=['ECG Data'])
+            file_name = f"ecg_stream_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            upload_to_gcs(file_name, df)
 
             # Clear accumulated data after processing
             accumulated_ecg_data = []
