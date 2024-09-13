@@ -24,7 +24,7 @@ accumulated_ecg_data = []
 MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
 
 # GCP Bucket name and path
-BUCKET_NAME = os.getenv('fastapibucket')
+BUCKET_NAME = 'fastapibucket'
 STORAGE_CLIENT = storage.Client()
 
 def upload_to_gcs(file_name: str, data: pd.DataFrame):
