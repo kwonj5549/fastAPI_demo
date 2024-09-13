@@ -7,16 +7,18 @@ import logging
 from google.cloud import storage  # GCP Storage client
 import os
 import io
+from typing import List  # Import List for type hinting
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
 class ECGInputData(BaseModel):
-    ecg_data: list[float]
+    ecg_data: List[float]  # Changed from list[float] to List[float] for Python 3.7+
 
 class ECGOutputData(BaseModel):
     results: dict
     cardiac_score: float
+    heart_rate: List[float]  # New field to include heart rate data
 
 # Store accumulated data in a global variable
 accumulated_ecg_data = []
@@ -115,7 +117,11 @@ def process_ecg(
         metadata = {'timestamp': timestamp_str}
         upload_to_gcs(file_name, df, metadata=metadata)
 
-        return ECGOutputData(results=results, cardiac_score=cardiac_score)
+        return ECGOutputData(
+            results=results,
+            cardiac_score=cardiac_score,
+            heart_rate=heart_rate.tolist()  # Include heart rate in the output
+        )
     except Exception as e:
         logging.error(f"Error processing ECG file: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
@@ -132,7 +138,7 @@ async def process_ecg_stream(
         body = await request.json()
         if "end_of_stream" in body and body["end_of_stream"]:
             if not accumulated_ecg_data:
-                return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0)
+                return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0, heart_rate=[])
 
             # Parse timestamp
             if timestamp:
@@ -192,7 +198,11 @@ async def process_ecg_stream(
             # Clear accumulated data after processing
             accumulated_ecg_data = []
 
-            return ECGOutputData(results=results, cardiac_score=cardiac_score)
+            return ECGOutputData(
+                results=results,
+                cardiac_score=cardiac_score,
+                heart_rate=heart_rate.tolist()  # Include heart rate in the output
+            )
         else:
             # Accumulate the chunk of data
             chunk_ecg_data = body.get("ecg_data", [])
@@ -201,8 +211,7 @@ async def process_ecg_stream(
 
             accumulated_ecg_data.extend(chunk_ecg_data)
 
-            return ECGOutputData(results={"message": "Chunk received, accumulating data."}, cardiac_score=1.0)
-
+            return ECGOutputData(results={"message": "Chunk received, accumulating data."}, cardiac_score=1.0, heart_rate=[])
     except Exception as e:
         logging.error(f"Error processing ECG stream: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during streaming processing: {e}")
