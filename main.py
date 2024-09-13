@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 import pandas as pd
 import neurokit2 as nk
@@ -13,6 +13,7 @@ logging.basicConfig(level=logging.INFO)
 
 class ECGInputData(BaseModel):
     ecg_data: list[float]
+    timestamp: str = None  # Optional timestamp in ISO 8601 format
 
 class ECGOutputData(BaseModel):
     results: dict
@@ -21,11 +22,8 @@ class ECGOutputData(BaseModel):
 # Store accumulated data in a global variable
 accumulated_ecg_data = []
 
-# Minimum chunk size to process data
-MIN_CHUNK_SIZE = 500  # Adjust this based on your needs
-
 # GCP Bucket name and path
-BUCKET_NAME = 'fastapibucket'
+BUCKET_NAME = 'fastapibucket'  # Replace with your bucket name
 STORAGE_CLIENT = storage.Client()
 
 def upload_to_gcs(file_name: str, data: pd.DataFrame, metadata: dict = None):
@@ -54,17 +52,12 @@ def merge_intervals(intervals):
     return merged
 
 @app.post("/process_ecg_file", response_model=ECGOutputData)
-def process_ecg(
-        data: ECGInputData,
-        tachycardia_cutoff: int = Query(100, description="Heart rate cutoff for tachycardia"),
-        bradycardia_cutoff: int = Query(60, description="Heart rate cutoff for bradycardia"),
-        timestamp: str = Query(None, description="Optional timestamp in ISO 8601 format")
-) -> ECGOutputData:
+def process_ecg_file(data: ECGInputData) -> ECGOutputData:
     try:
         # Parse timestamp
-        if timestamp:
+        if data.timestamp:
             try:
-                timestamp_parsed = pd.Timestamp(timestamp)
+                timestamp_parsed = pd.Timestamp(data.timestamp)
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid timestamp format. Use ISO 8601 format.")
         else:
@@ -81,25 +74,48 @@ def process_ecg(
         rpeaks = info['ECG_R_Peaks']
 
         # Calculate heart rate
-        heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
+        heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250, desired_length=len(ecg_signal))
 
-        # Detect abnormalities
-        tachycardia_periods = np.where(heart_rate > tachycardia_cutoff)[0]
-        bradycardia_periods = np.where(heart_rate < bradycardia_cutoff)[0]
-        flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]  # No R-peaks for more than 1.5 seconds
+        # Detect flatline periods
+        flatline_threshold = 250 * 1.5  # No R-peaks for more than 1.5 seconds
+        flatline_indices = np.where(np.diff(rpeaks) > flatline_threshold)[0]
 
-        # Convert periods to start and end indices
+        # Initialize a boolean array for flatline periods
+        is_flatline = np.zeros(len(heart_rate), dtype=bool)
+
+        # Mark flatline periods in the boolean array
+        for idx in flatline_indices:
+            start = rpeaks[idx]
+            end = rpeaks[idx + 1] if idx + 1 < len(rpeaks) else len(ecg_signal)
+            is_flatline[start:end] = True
+
+        # Detect tachycardia (exclude flatline periods)
+        tachycardia_indices = np.where((heart_rate > 100) & (~is_flatline))[0]
+
+        # Detect bradycardia (exclude flatline periods)
+        bradycardia_indices = np.where((heart_rate < 60) & (~is_flatline))[0]
+
+        # Convert periods to start and end times
         def get_periods(indices):
-            return [[rpeaks[i] / 250, rpeaks[i+1] / 250] for i in indices if i+1 < len(rpeaks)]
+            periods = []
+            for idx in indices:
+                if idx + 1 < len(ecg_signal):
+                    periods.append([idx / 250, (idx + 1) / 250])
+            return periods
 
         # Merge overlapping intervals
-        merged_tachycardia = merge_intervals(get_periods(tachycardia_periods.tolist()))
-        merged_bradycardia = merge_intervals(get_periods(bradycardia_periods.tolist()))
-        merged_flatline = merge_intervals(get_periods(flatline_periods.tolist()))
+        merged_tachycardia = merge_intervals(get_periods(tachycardia_indices.tolist()))
+        merged_bradycardia = merge_intervals(get_periods(bradycardia_indices.tolist()))
+        merged_flatline = []
+        for idx in flatline_indices:
+            start_time = rpeaks[idx] / 250
+            end_time = rpeaks[idx + 1] / 250 if idx + 1 < len(rpeaks) else len(ecg_signal) / 250
+            merged_flatline.append([start_time, end_time])
+        merged_flatline = merge_intervals(merged_flatline)
 
         # Calculate cardiac score
         total_periods = len(heart_rate)
-        abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+        abnormal_periods = len(tachycardia_indices) + len(bradycardia_indices) + len(flatline_indices)
         cardiac_score = 1 - (abnormal_periods / total_periods)
 
         # Prepare results
@@ -122,10 +138,7 @@ def process_ecg(
 
 @app.post("/process_ecg_stream", response_model=ECGOutputData)
 async def process_ecg_stream(
-        request: Request,
-        tachycardia_cutoff: int = Query(100, description="Heart rate cutoff for tachycardia"),
-        bradycardia_cutoff: int = Query(60, description="Heart rate cutoff for bradycardia"),
-        timestamp: str = Query(None, description="Optional timestamp in ISO 8601 format")
+        request: Request
 ) -> ECGOutputData:
     global accumulated_ecg_data
     try:
@@ -135,6 +148,7 @@ async def process_ecg_stream(
                 return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0)
 
             # Parse timestamp
+            timestamp = body.get("timestamp")
             if timestamp:
                 try:
                     timestamp_parsed = pd.Timestamp(timestamp)
@@ -155,25 +169,48 @@ async def process_ecg_stream(
             rpeaks = info['ECG_R_Peaks']
 
             # Calculate heart rate
-            heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
+            heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250, desired_length=len(ecg_signal))
 
-            # Detect abnormalities
-            tachycardia_periods = np.where(heart_rate > tachycardia_cutoff)[0]
-            bradycardia_periods = np.where(heart_rate < bradycardia_cutoff)[0]
-            flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]  # No R-peaks for more than 1.5 seconds
+            # Detect flatline periods
+            flatline_threshold = 250 * 1.5  # No R-peaks for more than 1.5 seconds
+            flatline_indices = np.where(np.diff(rpeaks) > flatline_threshold)[0]
 
-            # Convert periods to start and end indices
+            # Initialize a boolean array for flatline periods
+            is_flatline = np.zeros(len(heart_rate), dtype=bool)
+
+            # Mark flatline periods in the boolean array
+            for idx in flatline_indices:
+                start = rpeaks[idx]
+                end = rpeaks[idx + 1] if idx + 1 < len(rpeaks) else len(ecg_signal)
+                is_flatline[start:end] = True
+
+            # Detect tachycardia (exclude flatline periods)
+            tachycardia_indices = np.where((heart_rate > 100) & (~is_flatline))[0]
+
+            # Detect bradycardia (exclude flatline periods)
+            bradycardia_indices = np.where((heart_rate < 60) & (~is_flatline))[0]
+
+            # Convert periods to start and end times
             def get_periods(indices):
-                return [[rpeaks[i] / 250, rpeaks[i+1] / 250] for i in indices if i+1 < len(rpeaks)]
+                periods = []
+                for idx in indices:
+                    if idx + 1 < len(ecg_signal):
+                        periods.append([idx / 250, (idx + 1) / 250])
+                return periods
 
             # Merge overlapping intervals
-            merged_tachycardia = merge_intervals(get_periods(tachycardia_periods.tolist()))
-            merged_bradycardia = merge_intervals(get_periods(bradycardia_periods.tolist()))
-            merged_flatline = merge_intervals(get_periods(flatline_periods.tolist()))
+            merged_tachycardia = merge_intervals(get_periods(tachycardia_indices.tolist()))
+            merged_bradycardia = merge_intervals(get_periods(bradycardia_indices.tolist()))
+            merged_flatline = []
+            for idx in flatline_indices:
+                start_time = rpeaks[idx] / 250
+                end_time = rpeaks[idx + 1] / 250 if idx + 1 < len(rpeaks) else len(ecg_signal) / 250
+                merged_flatline.append([start_time, end_time])
+            merged_flatline = merge_intervals(merged_flatline)
 
             # Calculate cardiac score
             total_periods = len(heart_rate)
-            abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+            abnormal_periods = len(tachycardia_indices) + len(bradycardia_indices) + len(flatline_indices)
             cardiac_score = 1 - (abnormal_periods / total_periods)
 
             # Prepare results
@@ -283,16 +320,30 @@ def get_statistics(
         rpeaks = info['ECG_R_Peaks']
 
         # Calculate heart rate
-        heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
+        heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250, desired_length=len(ecg_signal))
 
-        # Detect abnormalities
-        tachycardia_periods = np.where(heart_rate > 100)[0]
-        bradycardia_periods = np.where(heart_rate < 60)[0]
-        flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]
+        # Detect flatline periods
+        flatline_threshold = 250 * 1.5  # No R-peaks for more than 1.5 seconds
+        flatline_indices = np.where(np.diff(rpeaks) > flatline_threshold)[0]
+
+        # Initialize a boolean array for flatline periods
+        is_flatline = np.zeros(len(heart_rate), dtype=bool)
+
+        # Mark flatline periods in the boolean array
+        for idx in flatline_indices:
+            start = rpeaks[idx]
+            end = rpeaks[idx + 1] if idx + 1 < len(rpeaks) else len(ecg_signal)
+            is_flatline[start:end] = True
+
+        # Detect tachycardia (exclude flatline periods)
+        tachycardia_indices = np.where((heart_rate > 100) & (~is_flatline))[0]
+
+        # Detect bradycardia (exclude flatline periods)
+        bradycardia_indices = np.where((heart_rate < 60) & (~is_flatline))[0]
 
         # Calculate cardiac score
         total_periods = len(heart_rate)
-        abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+        abnormal_periods = len(tachycardia_indices) + len(bradycardia_indices) + len(flatline_indices)
         cardiac_score = 1 - (abnormal_periods / total_periods)
 
         return {"cardiac_score": cardiac_score}
@@ -303,7 +354,3 @@ def get_statistics(
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str = None):
-    return {"item_id": item_id, "q": q}
