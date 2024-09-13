@@ -55,14 +55,18 @@ def merge_intervals(intervals):
 @app.post("/process_ecg_file", response_model=ECGOutputData)
 def process_ecg_file(data: ECGInputData) -> ECGOutputData:
     try:
-        # Parse timestamp
+        # Parse timestamp and ensure it's timezone-aware
         if data.timestamp:
             try:
                 timestamp_parsed = pd.Timestamp(data.timestamp)
+                if timestamp_parsed.tzinfo is None:  # If tz-naive, localize to UTC
+                    timestamp_parsed = timestamp_parsed.tz_localize('UTC')
+                else:
+                    timestamp_parsed = timestamp_parsed.tz_convert('UTC')
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid timestamp format. Use ISO 8601 format.")
         else:
-            timestamp_parsed = pd.Timestamp.now()
+            timestamp_parsed = pd.Timestamp.now(tz='UTC')
 
         timestamp_str = timestamp_parsed.isoformat()
         timestamp_for_filename = timestamp_parsed.strftime('%Y%m%d_%H%M%S')
@@ -144,19 +148,22 @@ async def process_ecg_stream(
     global accumulated_ecg_data
     try:
         body = await request.json()
+        # Handle the end-of-stream signal and process data
         if "end_of_stream" in body and body["end_of_stream"]:
-            if not accumulated_ecg_data:
-                return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0)
-
-            # Parse timestamp
+            # Parse timestamp and ensure it's timezone-aware
             timestamp = body.get("timestamp")
             if timestamp:
                 try:
                     timestamp_parsed = pd.Timestamp(timestamp)
+                    if timestamp_parsed.tzinfo is None:  # If tz-naive, localize to UTC
+                        timestamp_parsed = timestamp_parsed.tz_localize('UTC')
+                    else:
+                        timestamp_parsed = timestamp_parsed.tz_convert('UTC')
                 except Exception as e:
                     raise HTTPException(status_code=400, detail="Invalid timestamp format. Use ISO 8601 format.")
             else:
-                timestamp_parsed = pd.Timestamp.now()
+                timestamp_parsed = pd.Timestamp.now(tz='UTC')  # Ensure timestamp is timezone-aware
+
 
             timestamp_str = timestamp_parsed.isoformat()
             timestamp_for_filename = timestamp_parsed.strftime('%Y%m%d_%H%M%S')
@@ -252,11 +259,11 @@ def get_statistics(
         end_date: str = Query(None, description="End date in 'YYYY-MM-DD' format")
 ) -> dict:
     try:
-        # Determine the time range
-        now = pd.Timestamp.now(tz='UTC')
+        now = pd.Timestamp.now(tz='UTC')  # Ensure current time is tz-aware
+
         if start_date and end_date:
             try:
-                start_time = pd.Timestamp(start_date).tz_localize('UTC')
+                start_time = pd.Timestamp(start_date).tz_localize('UTC')  # Make tz-aware
                 end_time = pd.Timestamp(end_date).tz_localize('UTC') + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid date format. Use 'YYYY-MM-DD'.")
@@ -264,7 +271,7 @@ def get_statistics(
                 raise HTTPException(status_code=400, detail="start_date must be before end_date.")
         elif start_date:
             try:
-                start_time = pd.Timestamp(start_date).tz_localize('UTC')
+                start_time = pd.Timestamp(start_date).tz_localize('UTC')  # Make tz-aware
                 end_time = start_time + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid start_date format. Use 'YYYY-MM-DD'.")
