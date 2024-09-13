@@ -289,7 +289,6 @@ def get_statistics(
             else:
                 raise HTTPException(status_code=400, detail="Provide 'start_date' and 'end_date' or set 'period' to 'daily' or 'weekly'.")
             end_time = now
-
         bucket = STORAGE_CLIENT.bucket(BUCKET_NAME)
         blobs = bucket.list_blobs()
 
@@ -306,10 +305,6 @@ def get_statistics(
 
             try:
                 file_timestamp = pd.Timestamp(timestamp_str)
-                if file_timestamp.tzinfo is None:
-                    file_timestamp = file_timestamp.tz_localize('UTC')
-                else:
-                    file_timestamp = file_timestamp.tz_convert('UTC')
             except Exception as e:
                 logging.warning(f"Invalid timestamp in metadata for blob {blob.name}: {e}")
                 continue  # Skip if timestamp is invalid
@@ -323,12 +318,32 @@ def get_statistics(
         if not ecg_data_list:
             return {"message": "No data available for the specified period."}
 
-        # [Rest of your code remains the same]
-        # Process the accumulated data...
+        # Process the accumulated data
+        ecg_signal = pd.Series(ecg_data_list)
+        ecg_signal = nk.ecg_clean(ecg_signal, sampling_rate=250)
 
+        # Process ECG and detect R-peaks
+        processed_data, info = nk.ecg_process(ecg_signal, sampling_rate=250)
+        rpeaks = info['ECG_R_Peaks']
+
+        # Calculate heart rate
+        heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
+
+        # Detect abnormalities
+        tachycardia_periods = np.where(heart_rate > 100)[0]
+        bradycardia_periods = np.where(heart_rate < 60)[0]
+        flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]
+
+        # Calculate cardiac score
+        total_periods = len(heart_rate)
+        abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+        cardiac_score = 1 - (abnormal_periods / total_periods)
+
+        return {"cardiac_score": cardiac_score}
     except Exception as e:
         logging.error(f"Error calculating statistics: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred while calculating statistics: {e}")
+
 
 @app.get("/")
 def read_root():
