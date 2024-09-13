@@ -7,18 +7,16 @@ import logging
 from google.cloud import storage  # GCP Storage client
 import os
 import io
-from typing import List  # Import List for type hinting
 
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
 class ECGInputData(BaseModel):
-    ecg_data: List[float]  # Changed from list[float] to List[float] for Python 3.7+
+    ecg_data: list[float]
 
 class ECGOutputData(BaseModel):
     results: dict
     cardiac_score: float
-    heart_rate: List[float]  # New field to include heart rate data
 
 # Store accumulated data in a global variable
 accumulated_ecg_data = []
@@ -117,11 +115,7 @@ def process_ecg(
         metadata = {'timestamp': timestamp_str}
         upload_to_gcs(file_name, df, metadata=metadata)
 
-        return ECGOutputData(
-            results=results,
-            cardiac_score=cardiac_score,
-            heart_rate=heart_rate.tolist()  # Include heart rate in the output
-        )
+        return ECGOutputData(results=results, cardiac_score=cardiac_score)
     except Exception as e:
         logging.error(f"Error processing ECG file: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during processing: {e}")
@@ -138,7 +132,7 @@ async def process_ecg_stream(
         body = await request.json()
         if "end_of_stream" in body and body["end_of_stream"]:
             if not accumulated_ecg_data:
-                return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0, heart_rate=[])
+                return ECGOutputData(results={"message": "No data to process."}, cardiac_score=1.0)
 
             # Parse timestamp
             if timestamp:
@@ -198,11 +192,7 @@ async def process_ecg_stream(
             # Clear accumulated data after processing
             accumulated_ecg_data = []
 
-            return ECGOutputData(
-                results=results,
-                cardiac_score=cardiac_score,
-                heart_rate=heart_rate.tolist()  # Include heart rate in the output
-            )
+            return ECGOutputData(results=results, cardiac_score=cardiac_score)
         else:
             # Accumulate the chunk of data
             chunk_ecg_data = body.get("ecg_data", [])
@@ -211,23 +201,49 @@ async def process_ecg_stream(
 
             accumulated_ecg_data.extend(chunk_ecg_data)
 
-            return ECGOutputData(results={"message": "Chunk received, accumulating data."}, cardiac_score=1.0, heart_rate=[])
+            return ECGOutputData(results={"message": "Chunk received, accumulating data."}, cardiac_score=1.0)
+
     except Exception as e:
         logging.error(f"Error processing ECG stream: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during streaming processing: {e}")
 
 @app.get("/statistics")
 def get_statistics(
-        period: str = Query('daily', description="Period for statistics: 'daily' or 'weekly'")
+        period: str = Query(None, description="Period for statistics: 'daily' or 'weekly'"),
+        start_date: str = Query(None, description="Start date in 'YYYY-MM-DD' format"),
+        end_date: str = Query(None, description="End date in 'YYYY-MM-DD' format")
 ) -> dict:
     try:
+        # Determine the time range
         now = pd.Timestamp.now()
-        if period == 'daily':
-            start_time = now - pd.Timedelta(days=1)
-        elif period == 'weekly':
-            start_time = now - pd.Timedelta(days=7)
+        if start_date and end_date:
+            try:
+                start_time = pd.Timestamp(start_date)
+                end_time = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use 'YYYY-MM-DD'.")
+            if start_time > end_time:
+                raise HTTPException(status_code=400, detail="start_date must be before end_date.")
+        elif start_date:
+            try:
+                start_time = pd.Timestamp(start_date)
+                end_time = start_time + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use 'YYYY-MM-DD'.")
+        elif end_date:
+            try:
+                end_time = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                start_time = end_time - pd.Timedelta(days=1) + pd.Timedelta(seconds=1)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Use 'YYYY-MM-DD'.")
         else:
-            raise HTTPException(status_code=400, detail="Invalid period. Choose 'daily' or 'weekly'.")
+            if period == 'daily':
+                start_time = now - pd.Timedelta(days=1)
+            elif period == 'weekly':
+                start_time = now - pd.Timedelta(days=7)
+            else:
+                raise HTTPException(status_code=400, detail="Provide 'start_date' and 'end_date' or set 'period' to 'daily' or 'weekly'.")
+            end_time = now
 
         bucket = STORAGE_CLIENT.bucket(BUCKET_NAME)
         blobs = bucket.list_blobs()
@@ -249,7 +265,7 @@ def get_statistics(
                 logging.warning(f"Invalid timestamp in metadata for blob {blob.name}: {e}")
                 continue  # Skip if timestamp is invalid
 
-            if start_time <= file_timestamp <= now:
+            if start_time <= file_timestamp <= end_time:
                 # Download blob content
                 csv_content = blob.download_as_string()
                 df = pd.read_csv(io.StringIO(csv_content.decode('utf-8')))
