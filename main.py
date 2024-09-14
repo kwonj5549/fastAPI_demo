@@ -250,6 +250,7 @@ async def process_ecg_stream(
         logging.error(f"Error processing ECG stream: {e}")
         raise HTTPException(status_code=400, detail=f"An error occurred during streaming processing: {e}")
 
+
 @app.get("/statistics")
 def get_statistics(
         period: str = Query(None, description="Period for statistics: 'daily' or 'weekly'"),
@@ -346,37 +347,14 @@ def get_statistics(
         bradycardia_indices = np.where(heart_rate < 60)[0]
         flatline_indices = np.where(np.diff(rpeaks) > 250 * 1.5)[0]
 
-        # Convert periods to start and end times
-        def get_periods(indices):
-            periods = []
-            for idx in indices:
-                if idx + 1 < len(ecg_signal):
-                    periods.append([idx / 250, (idx + 1) / 250])
-            return periods
-
-        # Merge overlapping intervals
-        merged_tachycardia = merge_intervals(get_periods(tachycardia_indices.tolist()))
-        merged_bradycardia = merge_intervals(get_periods(bradycardia_indices.tolist()))
-        merged_flatline = []
-        for idx in flatline_indices:
-            start_time = rpeaks[idx] / 250
-            end_time = rpeaks[idx + 1] / 250 if idx + 1 < len(rpeaks) else len(ecg_signal) / 250
-            merged_flatline.append([start_time, end_time])
-        merged_flatline = merge_intervals(merged_flatline)
-
         # Calculate cardiac score
         total_periods = len(heart_rate)
         abnormal_periods = len(tachycardia_indices) + len(bradycardia_indices) + len(flatline_indices)
         cardiac_score = 1 - (abnormal_periods / total_periods)
 
-        # Prepare results
-        results = {
-            "tachycardia_periods": merged_tachycardia,
-            "bradycardia_periods": merged_bradycardia,
-            "flatline_periods": merged_flatline,
-        }
+        # **Modified here to only return the cardiac score**
+        return {"cardiac_score": cardiac_score}
 
-        return {"cardiac_score": cardiac_score, "results": results}
     except Exception as e:
         logging.error(f"Error calculating statistics: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred while calculating statistics: {e}")
