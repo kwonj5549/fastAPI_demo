@@ -7,8 +7,7 @@ import logging
 from google.cloud import storage  # GCP Storage client
 import os
 import io
-from dateutil import parser
-from datetime import timezone
+
 app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 
@@ -164,7 +163,6 @@ async def process_ecg_stream(
             else:
                 timestamp_parsed = pd.Timestamp.now(tz='UTC')  # Ensure timestamp is timezone-aware
 
-
             timestamp_str = timestamp_parsed.isoformat()
             timestamp_for_filename = timestamp_parsed.strftime('%Y%m%d_%H%M%S')
 
@@ -261,23 +259,22 @@ def get_statistics(
     try:
         now = pd.Timestamp.now(tz='UTC')  # Ensure current time is tz-aware
 
+        # Parse start_date and end_date
         if start_date and end_date:
             try:
-                start_time = pd.Timestamp(start_date).tz_localize('UTC')  # Make tz-aware
-                end_time = pd.Timestamp(end_date).tz_localize('UTC') + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                start_time = pd.Timestamp(start_date)
+                end_time = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid date format. Use 'YYYY-MM-DD'.")
-            if start_time > end_time:
-                raise HTTPException(status_code=400, detail="start_date must be before end_date.")
         elif start_date:
             try:
-                start_time = pd.Timestamp(start_date).tz_localize('UTC')  # Make tz-aware
+                start_time = pd.Timestamp(start_date)
                 end_time = start_time + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid start_date format. Use 'YYYY-MM-DD'.")
         elif end_date:
             try:
-                end_time = pd.Timestamp(end_date).tz_localize('UTC') + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                end_time = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
                 start_time = end_time - pd.Timedelta(days=1) + pd.Timedelta(seconds=1)
             except Exception as e:
                 raise HTTPException(status_code=400, detail="Invalid end_date format. Use 'YYYY-MM-DD'.")
@@ -289,6 +286,17 @@ def get_statistics(
             else:
                 raise HTTPException(status_code=400, detail="Provide 'start_date' and 'end_date' or set 'period' to 'daily' or 'weekly'.")
             end_time = now
+
+        # Ensure start_time and end_time are timezone-aware
+        if start_time.tzinfo is None:
+            start_time = start_time.tz_localize('UTC')
+        else:
+            start_time = start_time.tz_convert('UTC')
+        if end_time.tzinfo is None:
+            end_time = end_time.tz_localize('UTC')
+        else:
+            end_time = end_time.tz_convert('UTC')
+
         bucket = STORAGE_CLIENT.bucket(BUCKET_NAME)
         blobs = bucket.list_blobs()
 
@@ -305,6 +313,10 @@ def get_statistics(
 
             try:
                 file_timestamp = pd.Timestamp(timestamp_str)
+                if file_timestamp.tzinfo is None:
+                    file_timestamp = file_timestamp.tz_localize('UTC')
+                else:
+                    file_timestamp = file_timestamp.tz_convert('UTC')
             except Exception as e:
                 logging.warning(f"Invalid timestamp in metadata for blob {blob.name}: {e}")
                 continue  # Skip if timestamp is invalid
@@ -330,20 +342,44 @@ def get_statistics(
         heart_rate = nk.ecg_rate(rpeaks, sampling_rate=250)
 
         # Detect abnormalities
-        tachycardia_periods = np.where(heart_rate > 100)[0]
-        bradycardia_periods = np.where(heart_rate < 60)[0]
-        flatline_periods = np.where(np.diff(rpeaks) > 250 * 1.5)[0]
+        tachycardia_indices = np.where(heart_rate > 100)[0]
+        bradycardia_indices = np.where(heart_rate < 60)[0]
+        flatline_indices = np.where(np.diff(rpeaks) > 250 * 1.5)[0]
+
+        # Convert periods to start and end times
+        def get_periods(indices):
+            periods = []
+            for idx in indices:
+                if idx + 1 < len(ecg_signal):
+                    periods.append([idx / 250, (idx + 1) / 250])
+            return periods
+
+        # Merge overlapping intervals
+        merged_tachycardia = merge_intervals(get_periods(tachycardia_indices.tolist()))
+        merged_bradycardia = merge_intervals(get_periods(bradycardia_indices.tolist()))
+        merged_flatline = []
+        for idx in flatline_indices:
+            start_time = rpeaks[idx] / 250
+            end_time = rpeaks[idx + 1] / 250 if idx + 1 < len(rpeaks) else len(ecg_signal) / 250
+            merged_flatline.append([start_time, end_time])
+        merged_flatline = merge_intervals(merged_flatline)
 
         # Calculate cardiac score
         total_periods = len(heart_rate)
-        abnormal_periods = len(tachycardia_periods) + len(bradycardia_periods) + len(flatline_periods)
+        abnormal_periods = len(tachycardia_indices) + len(bradycardia_indices) + len(flatline_indices)
         cardiac_score = 1 - (abnormal_periods / total_periods)
 
-        return {"cardiac_score": cardiac_score}
+        # Prepare results
+        results = {
+            "tachycardia_periods": merged_tachycardia,
+            "bradycardia_periods": merged_bradycardia,
+            "flatline_periods": merged_flatline,
+        }
+
+        return {"cardiac_score": cardiac_score, "results": results}
     except Exception as e:
         logging.error(f"Error calculating statistics: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred while calculating statistics: {e}")
-
 
 @app.get("/")
 def read_root():
